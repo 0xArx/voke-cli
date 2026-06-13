@@ -219,7 +219,7 @@ async function agentCall(action, params = {}) {
   const r = await api("POST", "/functions/v1/agent-api", {
     body: { token: creds.agent_token, action, ...params },
   });
-  if (r.status === 401) die("agent token invalid or revoked — run `voke link` again");
+  if (r.status === 401) die("agent access is paused, revoked, or invalid — resume it in the Voke app (Settings → AI Agents), or run `voke link` again");
   if (r.status >= 400) die(r.json?.error || `agent-api error (${r.status})`);
   return r.json;
 }

@@ -288,7 +288,7 @@ use the `find_user_by_email` RPC for that).
 | Symptom | Cause / fix |
 |---|---|
 | `voke whoami` errors / `not logged in` | Not linked. Run `voke link` (or `voke login`) and have the user approve. |
-| `agent token invalid or revoked` (401) | The user revoked this agent in the app. Stop; ask them to re-link with `voke link`. |
+| `agent access is paused…` (401) | The user paused or revoked this agent (Voke → Settings → AI Agents). Stop; ask them to **resume** it there — a paused agent re-enables instantly, no re-linking. Run `voke link` again only if it was deleted. |
 | `--say needs ELEVENLABS_API_KEY` | Export the key, or use `--voice file.mp3`, or omit voice. |
 | `that friend hasn't allowed you to send them alarms` | Recipient must accept the user as a friend and keep "Can send me alarms" on. Don't retry. |
 | `no Voke user @name found` | Wrong handle. Confirm with the user; usernames are case-insensitive, no `@` stored. |
