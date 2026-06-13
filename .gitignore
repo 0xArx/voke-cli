@@ -1,0 +1,4 @@
+node_modules/
+.voke.json
+*.log
+.DS_Store
