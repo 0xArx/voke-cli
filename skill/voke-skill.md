@@ -92,6 +92,7 @@ The CLI auto-detects which credential is present and routes accordingly.
 | `voke cancel <id>` (delete an alarm) | ✅ | ✅ |
 | `voke add` / `accept` / `remove` / `friends` | ✅ *(needs friends scope)* | ✅ |
 | `voke consent` / `voke ring` | ✅ *(needs friends scope)* | ✅ |
+| `voke block` / `voke report` | ✅ *(needs friends scope)* | ✅ |
 | delete the **account** | ❌ *(never — user does it in-app)* | n/a |
 
 An agent acts on the user's behalf, so a paired token can do **everything the
@@ -206,7 +207,13 @@ voke remove @username     # unfriend (removes both directions)
 voke friends              # list friends + pending (incoming and sent)
 voke consent @username --alarms on|off --phone on|off   # who may reach the user
 voke ring @username       # ring a friend's phone aloud ("Voke my phone")
+voke block @username      # block: they can no longer send alarms or ring the user
+voke report @username --reason harassment   # report (also blocks unless --no-block)
 ```
+
+Block & report exist because Voke is a social app — use them when the user asks
+to stop someone reaching them or to flag abuse. Block flips the user's consent
+so that person can't send alarms or ring their phone; report files it for review.
 
 How it works: `voke add` sends a request; the other person `voke accept`s (or
 accepts in the app). After that, **either** side can send the other alarms.
@@ -302,6 +309,8 @@ Content-Type: application/json
 { "token": "vk_…", "action": "add_friend",    "username": "sara" }   // or accept_friend / remove_friend
 { "token": "vk_…", "action": "set_consent",   "username": "sara", "can_send_alarms": true, "can_voke_phone": false }
 { "token": "vk_…", "action": "voke_phone",    "username": "sara" }
+{ "token": "vk_…", "action": "block",         "username": "sara" }
+{ "token": "vk_…", "action": "report",        "username": "sara", "reason": "harassment" }  // also blocks unless block:false
 { "token": "vk_…", "action": "alarm",
   "title": "Interview",
   "at": "2026-06-13T07:30:00Z",      // OR "in_seconds": 1500  OR "right_now": true

@@ -556,6 +556,50 @@ async function cmdRing(flags) {
   console.log(`Ringing @${target.username}'s phone…`);
 }
 
+/** Block a user so they can no longer reach the user. */
+async function cmdBlock(flags) {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("block", socialParams(flags));
+    console.log(`Blocked @${r.blocked}.`);
+    return;
+  }
+  const { token, user } = await session();
+  const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
+  const r = await api("POST", "/rest/v1/trusted_contacts?on_conflict=user_id,contact_user_id", {
+    token, prefer: "resolution=merge-duplicates,return=minimal",
+    body: { user_id: user.id, contact_user_id: target.id, status: "blocked", can_send_alarms: false, can_voke_phone: false },
+  });
+  if (r.status >= 300) die(`couldn't block (${r.status}): ${r.text.slice(0, 200)}`);
+  console.log(`Blocked @${target.username}.`);
+}
+
+/** Report a user (and block them, unless --no-block). */
+async function cmdReport(flags) {
+  const reason = flags.reason || "other";
+  const block = flags["no-block"] !== true;
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("report", { ...socialParams(flags), reason, block });
+    console.log(`Reported @${r.reported}${r.blocked ? " and blocked them" : ""}.`);
+    return;
+  }
+  const { token, user } = await session();
+  const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
+  const r = await api("POST", "/rest/v1/reports", {
+    token, prefer: "return=minimal",
+    body: { reporter_id: user.id, reported_id: target.id, reason },
+  });
+  if (r.status >= 300) die(`couldn't report (${r.status}): ${r.text.slice(0, 200)}`);
+  if (block) {
+    await api("POST", "/rest/v1/trusted_contacts?on_conflict=user_id,contact_user_id", {
+      token, prefer: "resolution=merge-duplicates,return=minimal",
+      body: { user_id: user.id, contact_user_id: target.id, status: "blocked", can_send_alarms: false, can_voke_phone: false },
+    });
+  }
+  console.log(`Reported @${target.username}${block ? " and blocked them" : ""}.`);
+}
+
 /** Delete an alarm you own (cancel it). */
 async function cmdCancel(flags) {
   const id = flags._[0];
@@ -901,7 +945,7 @@ function parseFlags(argv) {
   const flags = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--now" || a === "--daily") flags[a.slice(2)] = true;
+    if (a === "--now" || a === "--daily" || a === "--no-block") flags[a.slice(2)] = true;
     else if (a.startsWith("--")) flags[a.slice(2)] = argv[++i];
     else flags._.push(a);
   }
@@ -921,6 +965,8 @@ const HELP = `voke — send real voice alarms to your iPhone (and let your AI do
   voke friends                list friends & pending requests
   voke consent @username      who can reach you: --alarms on|off --phone on|off
   voke ring @username         ring a friend's phone aloud ("Voke my phone")
+  voke block @username        block a user (they can no longer reach you)
+  voke report @username       report a user (--reason <r>; also blocks unless --no-block)
   voke alarm [options]        set an alarm
       --at HH:MM              ring at a time (24h; rolls to tomorrow if past)
       --in 10m | 2h           ring after a duration
@@ -960,6 +1006,8 @@ Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke-cli`;
       case "friends": return await cmdFriends();
       case "consent": return await cmdConsent(flags);
       case "ring": return await cmdRing(flags);
+      case "block": return await cmdBlock(flags);
+      case "report": return await cmdReport(flags);
       case "alarm": return await cmdAlarm(flags);
       case "cancel": return await cmdCancel(flags);
       case "voices": case "voice": return await cmdVoices(flags);
