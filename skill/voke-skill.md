@@ -55,9 +55,10 @@ code, and tap Approve. The CLI then stores a scoped `vk_…` **agent token** in
 `~/.voke.json`.
 
 - **You never see their password.**
-- The token can **only** set alarms (and, if the user toggled it on while
-  approving, send to their friends). It cannot read their messages, change
-  settings, manage friends, or delete anything.
+- The token lets you set alarms and manage the user's **sound library** (list,
+  favorite, rename, save voices friends sent them), and — if the user toggled it
+  on while approving — send to their friends. It cannot read their messages,
+  change settings, manage the friend graph, or delete anything.
 - The user can **revoke it any time** from that same screen — the next call
   then fails with 401 and you should stop and tell them.
 
@@ -84,9 +85,9 @@ The CLI auto-detects which credential is present and routes accordingly.
 | attach AI voice / audio file | ✅ | ✅ |
 | `voke list` | ✅ | ✅ |
 | `voke whoami` | ✅ | ✅ |
-| `voke voices` (list saved sounds) | ✅ *(read-only)* | ✅ |
+| `voke voices` (list saved + received) | ✅ | ✅ |
 | reuse a saved sound (`--use`) | ✅ | ✅ |
-| favorite / rename / save-from-friends | ❌ *(app or login only)* | ✅ |
+| favorite / rename / save-from-friends | ✅ | ✅ |
 | `voke add` / `accept` / `friends` | ❌ *(asks user to do it)* | ✅ |
 
 If you need to add a friend but only hold an agent token, ask the user to add
@@ -170,17 +171,20 @@ voke alarm --in 1h --use "Gym"    # reuse a saved sound by title (or id) — no 
 voices friends have sent them. **Reuse beats re-generating:** if the user has a
 sound that fits ("my favorite wake-up"), `--use` it instead of `--say`.
 
-Managing the library — `voke voices fav/unfav/rename/save` — works only in a
-full login session (agent tokens are scoped to setting alarms). With an agent
-token you can still `voke voices` (list) and `--use` an existing sound; to
-favorite/rename/save, ask the user to do it in the app.
+You act on the user's behalf, so you can manage the library in **either** mode
+(paired agent token or full login):
 
 ```bash
-# login mode only:
 voke voices fav "Gym"             # favorite (pins it; rings first in pickers)
+voke voices unfav "Gym"           # remove from favorites
 voke voices rename "note 3" "Fajr adhan"
 voke voices save "Rise and shine" # copy a friend's voice into your own library
 ```
+
+Ownership is enforced server-side: you can only favorite/rename sounds the user
+**owns**, and only `save` voices that were actually **sent to** them (otherwise
+the call returns 404). You still can't manage friends, change settings, or
+delete — for those, ask the user.
 
 ---
 
@@ -274,7 +278,10 @@ Content-Type: application/json
 ```jsonc
 { "token": "vk_…", "action": "whoami" }
 { "token": "vk_…", "action": "list" }
-{ "token": "vk_…", "action": "voices" }   // → { voices: [{ id, title, duration, is_favorite }] }
+{ "token": "vk_…", "action": "voices" }   // → { voices:[{id,title,duration,is_favorite}], received:[{id,title,duration}] }
+{ "token": "vk_…", "action": "favorite", "voice_id": "<uuid>", "favorite": true }
+{ "token": "vk_…", "action": "rename",   "voice_id": "<uuid>", "title": "Fajr adhan" }
+{ "token": "vk_…", "action": "save_voice", "voice_id": "<received uuid>" }   // save a friend's voice
 { "token": "vk_…", "action": "alarm",
   "title": "Interview",
   "at": "2026-06-13T07:30:00Z",      // OR "in_seconds": 1500  OR "right_now": true
@@ -286,8 +293,10 @@ Content-Type: application/json
 }
 ```
 
-`voices` is read-only; pass a returned `id` back as `voice_id` to ring the user
-with a sound they already saved. An unknown `voice_id` returns **404**.
+Pass an owned `id` back as `voice_id` to ring the user with a saved sound, or to
+`favorite`/`rename` it; pass a `received` id to `save_voice`. Ownership is
+enforced — favorite/rename require a voice the user owns, save_voice a voice
+actually sent to them; otherwise **404**.
 
 Responses are JSON. Errors: **401** invalid/revoked token · **403** friends
 scope not granted · **400** consent missing or bad input · **429** rate limit

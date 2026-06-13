@@ -462,24 +462,59 @@ async function cmdFriends() {
  * voke voices rename <title|id> "New name"
  * voke voices save   <title|id>     save a friend's voice into your own library
  *
- * Listing works with a paired agent token too; managing the library needs a
- * full login (`voke login`), since agent tokens can only set alarms.
+ * Works in both modes — a paired agent acts on the user's behalf, so it can
+ * manage the library too (via the scoped agent-api), as well as a full login.
  */
 async function cmdVoices(flags) {
   const sub = (flags._[0] || "list").toLowerCase();
 
-  // Agent-token mode: read-only listing via the scoped endpoint.
+  // Agent-token mode: route through the scoped agent-api (same capabilities).
   const creds = readCreds();
-  if (creds?.agent_token && !["login"].includes(sub)) {
+  if (creds?.agent_token) {
     if (sub === "list") {
-      const { voices } = await agentCall("voices");
-      if (!voices?.length) return console.log("no saved sounds yet");
-      for (const v of voices) {
-        console.log(`${v.is_favorite ? "★" : " "} ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`);
+      const { voices, received } = await agentCall("voices");
+      const favs = (voices || []).filter((v) => v.is_favorite);
+      const rest = (voices || []).filter((v) => !v.is_favorite);
+      if (!voices?.length && !received?.length) return console.log("no saved sounds yet");
+      if (favs.length) {
+        console.log("Favorites:");
+        favs.forEach((v) => console.log(`  ★ ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
+      }
+      if (rest.length) {
+        console.log(favs.length ? "More sounds:" : "Your sounds:");
+        rest.forEach((v) => console.log(`    ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
+      }
+      if (received?.length) {
+        console.log("From friends (save one with `voke voices save \"<title>\"`):");
+        received.forEach((v) => console.log(`    ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
       }
       return;
     }
-    die(`managing your sound library needs a full login — run \`voke login\` (agent tokens can only set alarms)`);
+    if (["fav", "favorite", "unfav", "unfavorite"].includes(sub)) {
+      const on = sub === "fav" || sub === "favorite";
+      const { voices } = await agentCall("voices");
+      const v = pickVoice(voices || [], flags._[1]);
+      await agentCall("favorite", { voice_id: v.id, favorite: on });
+      console.log(`${on ? "★ Favorited" : "Removed from favorites"}: “${v.title || "Voice note"}”`);
+      return;
+    }
+    if (sub === "rename") {
+      const { voices } = await agentCall("voices");
+      const v = pickVoice(voices || [], flags._[1]);
+      const newTitle = (flags._.slice(2).join(" ") || flags.title || "").trim();
+      if (!newTitle) die(`give a new name: voke voices rename "<current>" "New name"`);
+      await agentCall("rename", { voice_id: v.id, title: newTitle });
+      console.log(`Renamed “${v.title || "Voice note"}” → “${newTitle}”`);
+      return;
+    }
+    if (sub === "save") {
+      const { received } = await agentCall("voices");
+      const v = pickVoice(received || [], flags._[1], { kind: "received voice" });
+      await agentCall("save_voice", { voice_id: v.id });
+      console.log(`Saved “${v.title || "Voice note"}” to your sounds. Reuse it with: voke alarm --use "${v.title || ""}"`);
+      return;
+    }
+    die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save`);
   }
 
   const { token, user } = await session();
