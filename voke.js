@@ -12,6 +12,9 @@
  *   voke alarm --in 25m --voice ./note.mp3
  *   voke alarm --now --say "Stand up and stretch."
  *   voke alarm --at 06:00 --to @username --say "Fajr time."   (friends only)
+ *   voke alarm --in 1h --use "Wake up"   reuse a saved/favorited sound
+ *   voke voices                          list saved sounds (★ favorites) + received
+ *   voke voices fav|unfav|rename|save    manage your sound library (login mode)
  *   voke list                            recent alarms
  *
  * TTS: set ELEVENLABS_API_KEY (optional VOKE_TTS_VOICE_ID). Without a key,
@@ -209,6 +212,58 @@ async function uploadVoice({ token, userID, bytes, ext, contentType, title }) {
   return id;
 }
 
+// ----------------------------------------------------------- voice library
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUUID = (s) => UUID_RE.test(String(s || ""));
+
+function fmtDuration(seconds) {
+  const t = Math.round(Number(seconds) || 0);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+/** My saved sounds, favorites first then newest. */
+async function ownedVoices(token, userID) {
+  const r = await api(
+    "GET",
+    `/rest/v1/voice_notes?owner_id=eq.${userID}&order=is_favorite.desc,created_at.desc&select=id,title,duration,is_favorite,saved_from`,
+    { token }
+  );
+  return r.json || [];
+}
+
+/** Voices friends sent me (RLS only returns ones from alarms addressed to me),
+ *  minus any I've already saved into my own library. */
+async function receivedVoices(token, userID, owned) {
+  const r = await api(
+    "GET",
+    `/rest/v1/voice_notes?owner_id=neq.${userID}&order=created_at.desc&select=id,title,duration`,
+    { token }
+  );
+  const savedFrom = new Set((owned || []).map((v) => v.saved_from).filter(Boolean));
+  const seen = new Set();
+  return (r.json || []).filter((v) => {
+    if (savedFrom.has(v.id) || seen.has(v.id)) return false;
+    seen.add(v.id);
+    return true;
+  });
+}
+
+/** Resolve a voice reference (a UUID, or a case-insensitive title substring)
+ *  against a list. Dies with a helpful message on no/ambiguous match. */
+function pickVoice(list, ref, { kind = "sound" } = {}) {
+  if (!ref) die(`which ${kind}? pass a title or id (see them with \`voke voices\`)`);
+  const hits = isUUID(ref)
+    ? list.filter((v) => v.id.toLowerCase() === ref.toLowerCase())
+    : list.filter((v) => (v.title || "").toLowerCase().includes(ref.toLowerCase()));
+  if (!hits.length) die(`no ${kind} matches "${ref}" — list them with \`voke voices\``);
+  if (hits.length > 1) {
+    const names = hits.map((v) => `“${v.title || "Voice note"}”`).join(", ");
+    die(`"${ref}" matches ${hits.length} ${kind}s (${names}) — be more specific or use the id`);
+  }
+  return hits[0];
+}
+
 // ----------------------------------------------------------------- commands
 
 // ------------------------------------------------- agent-token mode (vk_…)
@@ -398,6 +453,124 @@ async function cmdFriends() {
   if (out.length) { console.log("Sent (waiting):"); out.forEach((r) => console.log(`  ${tag(r.contact_user_id)}`)); }
 }
 
+// ----------------------------------------------------------- voice commands
+
+/**
+ * voke voices                       list your saved sounds + ones friends sent you
+ * voke voices fav    <title|id>     favorite a sound (favorites ring first / pin)
+ * voke voices unfav  <title|id>     remove from favorites
+ * voke voices rename <title|id> "New name"
+ * voke voices save   <title|id>     save a friend's voice into your own library
+ *
+ * Listing works with a paired agent token too; managing the library needs a
+ * full login (`voke login`), since agent tokens can only set alarms.
+ */
+async function cmdVoices(flags) {
+  const sub = (flags._[0] || "list").toLowerCase();
+
+  // Agent-token mode: read-only listing via the scoped endpoint.
+  const creds = readCreds();
+  if (creds?.agent_token && !["login"].includes(sub)) {
+    if (sub === "list") {
+      const { voices } = await agentCall("voices");
+      if (!voices?.length) return console.log("no saved sounds yet");
+      for (const v of voices) {
+        console.log(`${v.is_favorite ? "★" : " "} ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`);
+      }
+      return;
+    }
+    die(`managing your sound library needs a full login — run \`voke login\` (agent tokens can only set alarms)`);
+  }
+
+  const { token, user } = await session();
+  const userID = user.id;
+
+  if (sub === "list") {
+    const owned = await ownedVoices(token, userID);
+    const received = await receivedVoices(token, userID, owned);
+    if (!owned.length && !received.length) {
+      return console.log("no sounds yet — record or import one in the app, or set an alarm with --say/--voice");
+    }
+    const favs = owned.filter((v) => v.is_favorite);
+    const rest = owned.filter((v) => !v.is_favorite);
+    if (favs.length) {
+      console.log("Favorites:");
+      favs.forEach((v) => console.log(`  ★ ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
+    }
+    if (rest.length) {
+      console.log(favs.length ? "More sounds:" : "Your sounds:");
+      rest.forEach((v) => console.log(`    ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
+    }
+    if (received.length) {
+      console.log("From friends (save one with `voke voices save \"<title>\"`):");
+      received.forEach((v) => console.log(`    ${fmtDuration(v.duration).padEnd(6)} ${v.title || "Voice note"}`));
+    }
+    return;
+  }
+
+  if (sub === "fav" || sub === "favorite" || sub === "unfav" || sub === "unfavorite") {
+    const on = sub === "fav" || sub === "favorite";
+    const owned = await ownedVoices(token, userID);
+    const v = pickVoice(owned, flags._[1]);
+    const r = await api("PATCH", `/rest/v1/voice_notes?id=eq.${v.id}`, {
+      token, prefer: "return=minimal", body: { is_favorite: on },
+    });
+    if (r.status >= 300) die(`couldn't update favorite (${r.status}): ${r.text.slice(0, 200)}`);
+    console.log(`${on ? "★ Favorited" : "Removed from favorites"}: “${v.title || "Voice note"}”`);
+    return;
+  }
+
+  if (sub === "rename") {
+    const owned = await ownedVoices(token, userID);
+    const v = pickVoice(owned, flags._[1]);
+    const newTitle = (flags._.slice(2).join(" ") || flags.title || "").trim();
+    if (!newTitle) die(`give a new name: voke voices rename "<current>" "New name"`);
+    const r = await api("PATCH", `/rest/v1/voice_notes?id=eq.${v.id}`, {
+      token, prefer: "return=minimal", body: { title: newTitle },
+    });
+    if (r.status >= 300) die(`rename failed (${r.status}): ${r.text.slice(0, 200)}`);
+    console.log(`Renamed “${v.title || "Voice note"}” → “${newTitle}”`);
+    return;
+  }
+
+  if (sub === "save") {
+    const owned = await ownedVoices(token, userID);
+    const received = await receivedVoices(token, userID, owned);
+    const v = pickVoice(received, flags._[1], { kind: "received voice" });
+    // Copy the audio into my own storage, then record an owned voice note that
+    // remembers where it came from (so it won't show up to re-save again).
+    const meta = await api("GET", `/rest/v1/voice_notes?id=eq.${v.id}&select=storage_path,duration`, { token });
+    const srcPath = meta.json?.[0]?.storage_path;
+    if (!srcPath) die("couldn't read that voice — it may no longer be shared with you");
+    const dl = await fetch(`${SUPABASE_URL}/storage/v1/object/voice-notes/${srcPath}`, {
+      headers: { apikey: ANON_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (!dl.ok) die(`couldn't download that voice (${dl.status})`);
+    const bytes = Buffer.from(await dl.arrayBuffer());
+    const ext = (srcPath.split(".").pop() || "m4a").toLowerCase();
+    const types = { mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", aac: "audio/mp4", caf: "audio/x-caf" };
+    const id = crypto.randomUUID();
+    const destPath = `${userID.toLowerCase()}/${id.toLowerCase()}.${ext}`;
+    const up = await api("POST", `/storage/v1/object/voice-notes/${destPath}`, {
+      token, raw: bytes, contentType: types[ext] || "audio/mp4",
+    });
+    if (up.status !== 200 && up.status !== 201) die(`save failed on upload (${up.status}): ${up.text.slice(0, 200)}`);
+    const row = await api("POST", "/rest/v1/voice_notes", {
+      token,
+      body: {
+        id, owner_id: userID, title: v.title || "Voice note",
+        storage_path: destPath, duration: meta.json?.[0]?.duration || 0,
+        saved_from: v.id,
+      },
+    });
+    if (row.status !== 201) die(`save failed (${row.status}): ${row.text.slice(0, 200)}`);
+    console.log(`Saved “${v.title || "Voice note"}” to your sounds. Reuse it with: voke alarm --use "${v.title || ""}"`);
+    return;
+  }
+
+  die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save`);
+}
+
 async function cmdAlarm(flags) {
   // Agent-token mode: everything goes through the scoped agent-api.
   const creds = readCreds();
@@ -410,7 +583,16 @@ async function cmdAlarm(flags) {
     if (when.rightNow) params.right_now = true;
     else params.at = when.date.toISOString();
     if (flags.to) params.to_username = flags.to.replace(/^@/, "");
-    if (flags.say) {
+    if (flags.use) {
+      let vid = flags.use;
+      if (!isUUID(flags.use)) {
+        const { voices } = await agentCall("voices");
+        const v = pickVoice(voices || [], flags.use);
+        vid = v.id;
+        if (!flags.title && v.title) params.title = v.title;
+      }
+      params.voice_id = vid;
+    } else if (flags.say) {
       process.stderr.write("voke: generating voice…\n");
       params.voice_b64 = (await ttsToBuffer(flags.say)).toString("base64");
       params.voice_format = "mp3";
@@ -433,11 +615,15 @@ async function cmdAlarm(flags) {
   const when = parseWhen(flags);
 
   // A proper title shared by the alarm and its voice note.
-  const title = deriveTitle(flags);
+  let title = deriveTitle(flags);
 
-  // Resolve the voice (TTS > file > none/default tone).
+  // Resolve the voice (reuse saved > TTS > file > none/default tone).
   let voiceNoteID = null;
-  if (flags.say) {
+  if (flags.use) {
+    const v = pickVoice(await ownedVoices(token, userID), flags.use);
+    voiceNoteID = v.id;
+    if (!flags.title && !flags.say && v.title) title = v.title; // inherit the saved name
+  } else if (flags.say) {
     process.stderr.write("voke: generating voice…\n");
     const bytes = await ttsToBuffer(flags.say);
     voiceNoteID = await uploadVoice({
@@ -564,9 +750,15 @@ const HELP = `voke — send real voice alarms to your iPhone (and let your AI do
       --now                   ring as soon as the phone syncs
       --say "text"            AI voice via ElevenLabs (needs ELEVENLABS_API_KEY)
       --voice file.mp3        use an audio file (mp3/m4a/wav, ≤30s)
+      --use "title"|id        reuse a saved sound (see \`voke voices\`)
       --title "Label"         alarm label
       --to @username          send to a friend (they must allow it)
       --daily                 repeat daily
+  voke voices                 list your saved sounds + ones friends sent you
+      voices fav "title"      favorite a sound (favorites pin / ring first)
+      voices unfav "title"    remove from favorites
+      voices rename "t" "new" rename a sound
+      voices save "title"     save a friend's voice into your library
   voke list                   recent alarms
   voke skill                  print the AI-agent skill (this CLI ships with it)
   voke skill install          install it into your agent (~/.claude/skills)
@@ -587,6 +779,7 @@ Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke-cli`;
       case "accept": return await cmdAccept(flags);
       case "friends": return await cmdFriends();
       case "alarm": return await cmdAlarm(flags);
+      case "voices": case "voice": return await cmdVoices(flags);
       case "list": return await cmdList();
       case "skill": return cmdSkill(flags);
       default: console.log(HELP);

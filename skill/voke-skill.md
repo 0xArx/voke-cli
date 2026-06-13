@@ -84,6 +84,9 @@ The CLI auto-detects which credential is present and routes accordingly.
 | attach AI voice / audio file | ✅ | ✅ |
 | `voke list` | ✅ | ✅ |
 | `voke whoami` | ✅ | ✅ |
+| `voke voices` (list saved sounds) | ✅ *(read-only)* | ✅ |
+| reuse a saved sound (`--use`) | ✅ | ✅ |
+| favorite / rename / save-from-friends | ❌ *(app or login only)* | ✅ |
 | `voke add` / `accept` / `friends` | ❌ *(asks user to do it)* | ✅ |
 
 If you need to add a friend but only hold an agent token, ask the user to add
@@ -111,7 +114,12 @@ voke alarm [timing] [voice] [--title "Label"] [--to @username] [--daily]
 ```bash
 --say "text"            # speak this via ElevenLabs TTS (needs ELEVENLABS_API_KEY)
 --voice ./clip.mp3      # use an existing audio file (mp3 / m4a / wav)
+--use "Wake up"         # reuse a sound the user already saved (title or id; see `voke voices`)
 ```
+
+Prefer `--use` when the user refers to a sound they already have ("use my usual
+wake-up voice", "my favorite one") — it reuses the saved clip with no re-upload
+or TTS cost. Run `voke voices` first to see titles and which are favorited (★).
 
 **Other flags:**
 
@@ -144,6 +152,34 @@ voke alarm --in 10m --title "Pizza"
 
 # Your own pre-recorded clip:
 voke alarm --in 45m --voice ./reminder.m4a --title "Call Mom"
+```
+
+---
+
+## Saved sounds (the voice library)
+
+Users build up a library of sounds — recorded, imported, AI-generated, or saved
+from friends — and can favorite and name them. You can list and reuse them:
+
+```bash
+voke voices                       # list saved sounds (★ = favorite) + ones friends sent
+voke alarm --in 1h --use "Gym"    # reuse a saved sound by title (or id) — no re-upload
+```
+
+`voke voices` lists the user's own sounds (favorites first) and, separately,
+voices friends have sent them. **Reuse beats re-generating:** if the user has a
+sound that fits ("my favorite wake-up"), `--use` it instead of `--say`.
+
+Managing the library — `voke voices fav/unfav/rename/save` — works only in a
+full login session (agent tokens are scoped to setting alarms). With an agent
+token you can still `voke voices` (list) and `--use` an existing sound; to
+favorite/rename/save, ask the user to do it in the app.
+
+```bash
+# login mode only:
+voke voices fav "Gym"             # favorite (pins it; rings first in pickers)
+voke voices rename "note 3" "Fajr adhan"
+voke voices save "Rise and shine" # copy a friend's voice into your own library
 ```
 
 ---
@@ -238,15 +274,20 @@ Content-Type: application/json
 ```jsonc
 { "token": "vk_…", "action": "whoami" }
 { "token": "vk_…", "action": "list" }
+{ "token": "vk_…", "action": "voices" }   // → { voices: [{ id, title, duration, is_favorite }] }
 { "token": "vk_…", "action": "alarm",
   "title": "Interview",
   "at": "2026-06-13T07:30:00Z",      // OR "in_seconds": 1500  OR "right_now": true
   "repeat": "once",                   // or "daily"
   "to_username": "sara",              // optional — needs the friends scope
-  "voice_b64": "<base64 audio>",      // optional voice ≤ 30s
-  "voice_format": "mp3"               // mp3 | m4a | wav
+  "voice_id": "<uuid>",               // reuse a saved sound from "voices"…
+  "voice_b64": "<base64 audio>",      // …OR attach a new clip ≤ 30s
+  "voice_format": "mp3"               // mp3 | m4a | wav (with voice_b64)
 }
 ```
+
+`voices` is read-only; pass a returned `id` back as `voice_id` to ring the user
+with a sound they already saved. An unknown `voice_id` returns **404**.
 
 Responses are JSON. Errors: **401** invalid/revoked token · **403** friends
 scope not granted · **400** consent missing or bad input · **429** rate limit
