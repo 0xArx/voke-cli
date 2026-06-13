@@ -213,7 +213,8 @@ accepts in the app). After that, **either** side can send the other alarms.
 `voke add` auto-accepts if that person had already requested the user. Consent is
 per-friend: `voke consent @x --alarms off` stops @x sending the user alarms;
 `--phone on` lets @x Voke the user's phone. If you `--to` (or `ring`) someone who
-hasn't allowed it, the call fails — report it, don't retry.
+hasn't allowed it, the call fails — report it, don't retry. **Ringing a phone is
+rate-limited** (max ~12/hour, deduped within 30s) — never loop `voke ring`.
 
 ---
 
