@@ -14,8 +14,10 @@
  *   voke alarm --at 06:00 --to @username --say "Fajr time."   (friends only)
  *   voke alarm --in 1h --use "Wake up"   reuse a saved/favorited sound
  *   voke voices                          list saved sounds (★ favorites) + received
- *   voke voices fav|unfav|rename|save    manage your sound library (login mode)
- *   voke list                            recent alarms
+ *   voke voices fav|unfav|rename|save|delete   manage your sound library
+ *   voke add / accept / remove / friends / consent / ring   friend management
+ *   voke list                            recent alarms (with ids)
+ *   voke cancel <alarm_id>               delete an alarm
  *
  * TTS: set ELEVENLABS_API_KEY (optional VOKE_TTS_VOICE_ID). Without a key,
  * --say is unavailable; --voice <file> and silent (default-tone) alarms work.
@@ -382,8 +384,22 @@ async function usernamesFor(token, ids) {
 
 // ---------------------------------------------------------- friends (social)
 
+/** Resolve {username|email} params for an agent-api social call from flags. */
+function socialParams(flags) {
+  if (flags.email) return { email: flags.email };
+  return { username: String(flags._[0] || flags.to || "").replace(/^@/, "") };
+}
+
 /** Send a friend request (or auto-accept if they already requested you). */
 async function cmdAdd(flags) {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("add_friend", socialParams(flags));
+    console.log(r.accepted
+      ? `You're now friends with @${r.friend}.`
+      : `Friend request sent to @${r.friend}.`);
+    return;
+  }
   const { token, user } = await session();
   const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
   if (target.id === user.id) die("you can't add yourself as a friend");
@@ -406,6 +422,12 @@ async function cmdAdd(flags) {
 
 /** Accept an incoming friend request. */
 async function cmdAccept(flags) {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("accept_friend", socialParams(flags));
+    console.log(`You're now friends with @${r.friend}.`);
+    return;
+  }
   const { token, user } = await session();
   const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
   const inc = await api(
@@ -433,6 +455,16 @@ async function acceptEdge(token, myID, target, edgeID) {
 
 /** List accepted friends and pending requests (both directions). */
 async function cmdFriends() {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("friends");
+    const has = r.friends?.length || r.incoming?.length || r.outgoing?.length;
+    if (!has) return console.log("no friends yet — add one with `voke add @username`");
+    if (r.friends?.length) { console.log("Friends:"); r.friends.forEach((u) => console.log(`  @${u}`)); }
+    if (r.incoming?.length) { console.log("Incoming requests (accept with `voke accept @name`):"); r.incoming.forEach((u) => console.log(`  @${u}`)); }
+    if (r.outgoing?.length) { console.log("Sent (waiting):"); r.outgoing.forEach((u) => console.log(`  @${u}`)); }
+    return;
+  }
   const { token, user } = await session();
   const accepted = await api("GET", `/rest/v1/trusted_contacts?user_id=eq.${user.id}&status=eq.accepted&select=contact_user_id`, { token });
   const incoming = await api("GET", `/rest/v1/trusted_contacts?contact_user_id=eq.${user.id}&status=eq.pending&select=user_id`, { token });
@@ -451,6 +483,95 @@ async function cmdFriends() {
   if (acc.length) { console.log("Friends:"); acc.forEach((r) => console.log(`  ${tag(r.contact_user_id)}`)); }
   if (inc.length) { console.log("Incoming requests (accept with `voke accept @name`):"); inc.forEach((r) => console.log(`  ${tag(r.user_id)}`)); }
   if (out.length) { console.log("Sent (waiting):"); out.forEach((r) => console.log(`  ${tag(r.contact_user_id)}`)); }
+}
+
+/** Unfriend someone (removes the friendship both directions). */
+async function cmdRemove(flags) {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("remove_friend", socialParams(flags));
+    console.log(`Removed @${r.removed}.`);
+    return;
+  }
+  const { token, user } = await session();
+  const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
+  const r = await api(
+    "DELETE",
+    `/rest/v1/trusted_contacts?or=(and(user_id.eq.${user.id},contact_user_id.eq.${target.id}),and(user_id.eq.${target.id},contact_user_id.eq.${user.id}))`,
+    { token, prefer: "return=minimal" }
+  );
+  if (r.status >= 300) die(`couldn't remove (${r.status}): ${r.text.slice(0, 200)}`);
+  console.log(`Removed @${target.username}.`);
+}
+
+const onOff = (v) => (v === undefined ? undefined : /^(on|true|yes|1|allow)$/i.test(v));
+
+/** Per-friend consent: who can send YOU alarms / Voke YOUR phone.
+ *  voke consent @user --alarms on|off --phone on|off */
+async function cmdConsent(flags) {
+  const alarms = onOff(flags.alarms);
+  const phone = onOff(flags.phone);
+  if (alarms === undefined && phone === undefined) {
+    die("set --alarms on|off and/or --phone on|off  (e.g. voke consent @sara --alarms on --phone off)");
+  }
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const params = socialParams(flags);
+    if (alarms !== undefined) params.can_send_alarms = alarms;
+    if (phone !== undefined) params.can_voke_phone = phone;
+    const r = await agentCall("set_consent", params);
+    console.log(`Updated consent for @${r.friend}.`);
+    return;
+  }
+  const { token, user } = await session();
+  const target = await resolveUser(token, { handle: flags._[0], email: flags.email });
+  const patch = {};
+  if (alarms !== undefined) patch.can_send_alarms = alarms;
+  if (phone !== undefined) patch.can_voke_phone = phone;
+  const r = await api("PATCH", `/rest/v1/trusted_contacts?user_id=eq.${user.id}&contact_user_id=eq.${target.id}`, {
+    token, prefer: "return=minimal", body: patch,
+  });
+  if (r.status >= 300) die(`consent update failed (${r.status}): ${r.text.slice(0, 200)}`);
+  console.log(`Updated consent for @${target.username}.`);
+}
+
+/** Ring a friend's phone aloud ("Voke my phone"). Consent enforced server-side. */
+async function cmdRing(flags) {
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    const r = await agentCall("voke_phone", socialParams(flags));
+    console.log(`Ringing @${r.ringing}'s phone…`);
+    return;
+  }
+  const { token, user } = await session();
+  const target = await resolveUser(token, { handle: flags._[0] || flags.to, email: flags.email });
+  const r = await api("POST", "/rest/v1/phone_finder_requests", {
+    token, prefer: "return=minimal",
+    body: { from_user_id: user.id, to_user_id: target.id, status: "pending" },
+  });
+  if (r.status >= 300) {
+    const m = r.text.includes("not allowed") ? "they haven't allowed you to Voke their phone" : r.text.slice(0, 200);
+    die(`couldn't ring (${r.status}): ${m}`);
+  }
+  console.log(`Ringing @${target.username}'s phone…`);
+}
+
+/** Delete an alarm you own (cancel it). */
+async function cmdCancel(flags) {
+  const id = flags._[0];
+  if (!id) die("usage: voke cancel <alarm_id>  (see ids in `voke list`)");
+  const creds = readCreds();
+  if (creds?.agent_token) {
+    await agentCall("delete_alarm", { alarm_id: id });
+    console.log(`Deleted alarm ${id}.`);
+    return;
+  }
+  const { token, user } = await session();
+  const r = await api("DELETE", `/rest/v1/alarms?id=eq.${id}&owner_id=eq.${user.id}`, {
+    token, prefer: "return=representation",
+  });
+  if (!r.json?.length) die("no alarm with that id that you own");
+  console.log(`Deleted alarm ${id}.`);
 }
 
 // ----------------------------------------------------------- voice commands
@@ -514,7 +635,14 @@ async function cmdVoices(flags) {
       console.log(`Saved “${v.title || "Voice note"}” to your sounds. Reuse it with: voke alarm --use "${v.title || ""}"`);
       return;
     }
-    die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save`);
+    if (sub === "delete" || sub === "rm") {
+      const { voices } = await agentCall("voices");
+      const v = pickVoice(voices || [], flags._[1]);
+      await agentCall("delete_voice", { voice_id: v.id });
+      console.log(`Deleted “${v.title || "Voice note"}”.`);
+      return;
+    }
+    die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save | delete`);
   }
 
   const { token, user } = await session();
@@ -603,7 +731,17 @@ async function cmdVoices(flags) {
     return;
   }
 
-  die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save`);
+  if (sub === "delete" || sub === "rm") {
+    const v = pickVoice(await ownedVoices(token, userID), flags._[1]);
+    const meta = await api("GET", `/rest/v1/voice_notes?id=eq.${v.id}&select=storage_path`, { token });
+    const sp = meta.json?.[0]?.storage_path;
+    await api("DELETE", `/rest/v1/voice_notes?id=eq.${v.id}`, { token, prefer: "return=minimal" });
+    if (sp) await api("DELETE", `/storage/v1/object/voice-notes/${sp}`, { token });
+    console.log(`Deleted “${v.title || "Voice note"}”.`);
+    return;
+  }
+
+  die(`unknown: voke voices ${sub}. Use: list | fav | unfav | rename | save | delete`);
 }
 
 async function cmdAlarm(flags) {
@@ -706,28 +844,29 @@ async function cmdAlarm(flags) {
   }
 }
 
+function printAlarm(a) {
+  const t = a.is_right_now ? "right-now" : new Date(a.scheduled_time).toLocaleString();
+  console.log(`${(a.status || "?").padEnd(10)} ${t.padEnd(22)} ${(a.title || "").padEnd(20)} ${a.id || ""}`);
+}
+
 async function cmdList() {
   const creds = readCreds();
   if (creds?.agent_token) {
     const { alarms } = await agentCall("list");
     if (!alarms?.length) return console.log("no alarms yet");
-    for (const a of alarms) {
-      const t = a.is_right_now ? "right-now" : new Date(a.scheduled_time).toLocaleString();
-      console.log(`${(a.status || "?").padEnd(10)} ${t.padEnd(22)} ${a.title || ""}`);
-    }
+    alarms.forEach(printAlarm);
+    console.log("\nCancel one with: voke cancel <id>");
     return;
   }
   const { token, user } = await session();
   const r = await api(
     "GET",
-    `/rest/v1/alarms?or=(owner_id.eq.${user.id},recipient_id.eq.${user.id})&order=created_at.desc&limit=15&select=title,scheduled_time,status,type,is_right_now`,
+    `/rest/v1/alarms?or=(owner_id.eq.${user.id},recipient_id.eq.${user.id})&order=created_at.desc&limit=15&select=id,title,scheduled_time,status,type,is_right_now`,
     { token }
   );
   if (!r.json?.length) return console.log("no alarms yet");
-  for (const a of r.json) {
-    const t = a.is_right_now ? "right-now" : new Date(a.scheduled_time).toLocaleString();
-    console.log(`${(a.status || "?").padEnd(10)} ${t.padEnd(22)} ${a.title || ""}`);
-  }
+  r.json.forEach(printAlarm);
+  console.log("\nCancel one with: voke cancel <id>");
 }
 
 // ------------------------------------------------------------------- skill
@@ -778,7 +917,10 @@ const HELP = `voke — send real voice alarms to your iPhone (and let your AI do
   voke logout | voke whoami
   voke add @username          send a friend request (or --email you@x.com)
   voke accept @username       accept an incoming friend request
+  voke remove @username       unfriend (remove both directions)
   voke friends                list friends & pending requests
+  voke consent @username      who can reach you: --alarms on|off --phone on|off
+  voke ring @username         ring a friend's phone aloud ("Voke my phone")
   voke alarm [options]        set an alarm
       --at HH:MM              ring at a time (24h; rolls to tomorrow if past)
       --in 10m | 2h           ring after a duration
@@ -794,7 +936,9 @@ const HELP = `voke — send real voice alarms to your iPhone (and let your AI do
       voices unfav "title"    remove from favorites
       voices rename "t" "new" rename a sound
       voices save "title"     save a friend's voice into your library
-  voke list                   recent alarms
+      voices delete "title"   delete a saved sound
+  voke list                   recent alarms (with ids)
+  voke cancel <alarm_id>      delete an alarm you set
   voke skill                  print the AI-agent skill (this CLI ships with it)
   voke skill install          install it into your agent (~/.claude/skills)
 
@@ -812,8 +956,12 @@ Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke-cli`;
       case "whoami": return await cmdWhoami();
       case "add": return await cmdAdd(flags);
       case "accept": return await cmdAccept(flags);
+      case "remove": case "unfriend": return await cmdRemove(flags);
       case "friends": return await cmdFriends();
+      case "consent": return await cmdConsent(flags);
+      case "ring": return await cmdRing(flags);
       case "alarm": return await cmdAlarm(flags);
+      case "cancel": return await cmdCancel(flags);
       case "voices": case "voice": return await cmdVoices(flags);
       case "list": return await cmdList();
       case "skill": return cmdSkill(flags);

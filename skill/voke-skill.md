@@ -55,10 +55,11 @@ code, and tap Approve. The CLI then stores a scoped `vk_…` **agent token** in
 `~/.voke.json`.
 
 - **You never see their password.**
-- The token lets you set alarms and manage the user's **sound library** (list,
-  favorite, rename, save voices friends sent them), and — if the user toggled it
-  on while approving — send to their friends. It cannot read their messages,
-  change settings, manage the friend graph, or delete anything.
+- The token lets you act on the user's behalf for everything **except deleting
+  their account**: set alarms, manage the sound library (favorite/rename/save/
+  delete), manage friends (add/accept/remove/consent), and Voke a friend's phone.
+  Friend-graph and send-to-friend actions need the friends scope the user toggled
+  on while approving. It can't delete the account (do that in-app).
 - The user can **revoke it any time** from that same screen — the next call
   then fails with 401 and you should stop and tell them.
 
@@ -87,12 +88,18 @@ The CLI auto-detects which credential is present and routes accordingly.
 | `voke whoami` | ✅ | ✅ |
 | `voke voices` (list saved + received) | ✅ | ✅ |
 | reuse a saved sound (`--use`) | ✅ | ✅ |
-| favorite / rename / save-from-friends | ✅ | ✅ |
-| `voke add` / `accept` / `friends` | ❌ *(asks user to do it)* | ✅ |
+| favorite / rename / save / delete sounds | ✅ | ✅ |
+| `voke cancel <id>` (delete an alarm) | ✅ | ✅ |
+| `voke add` / `accept` / `remove` / `friends` | ✅ *(needs friends scope)* | ✅ |
+| `voke consent` / `voke ring` | ✅ *(needs friends scope)* | ✅ |
+| delete the **account** | ❌ *(never — user does it in-app)* | n/a |
 
-If you need to add a friend but only hold an agent token, ask the user to add
-that friend in the app (or to run `voke login`); agent tokens deliberately
-can't manage the social graph.
+An agent acts on the user's behalf, so a paired token can do **everything the
+user can except delete their account** — set alarms, manage the sound library,
+manage friends, and Voke a friend's phone. Friend-graph and send-to-friend
+actions need the **friends scope** the user toggled on when linking; if it's off,
+those calls return 403 — ask the user to re-link with it enabled. Account
+deletion is never available to a token; the user must do it in the app.
 
 ---
 
@@ -181,26 +188,32 @@ voke voices rename "note 3" "Fajr adhan"
 voke voices save "Rise and shine" # copy a friend's voice into your own library
 ```
 
-Ownership is enforced server-side: you can only favorite/rename sounds the user
-**owns**, and only `save` voices that were actually **sent to** them (otherwise
-the call returns 404). You still can't manage friends, change settings, or
-delete — for those, ask the user.
+Ownership is enforced server-side: you can only favorite/rename/delete sounds the
+user **owns**, and only `save` voices that were actually **sent to** them
+(otherwise the call returns 404). Delete a sound with `voke voices delete
+"<title>"`. The one thing no token can do is delete the user's **account**.
 
 ---
 
-## Friends (login session only)
+## Friends, consent, and ringing a phone
+
+Works in **both** modes (a paired token needs the friends scope):
 
 ```bash
 voke add @username        # send a friend request   (or: voke add --email you@x.com)
 voke accept @username     # accept an incoming request
+voke remove @username     # unfriend (removes both directions)
 voke friends              # list friends + pending (incoming and sent)
+voke consent @username --alarms on|off --phone on|off   # who may reach the user
+voke ring @username       # ring a friend's phone aloud ("Voke my phone")
 ```
 
 How it works: `voke add` sends a request; the other person `voke accept`s (or
 accepts in the app). After that, **either** side can send the other alarms.
-`voke add` auto-accepts if that person had already requested the user. The
-recipient can disable "Can send me alarms" per-friend in the app, after which
-`--to` that friend fails — report it, don't retry.
+`voke add` auto-accepts if that person had already requested the user. Consent is
+per-friend: `voke consent @x --alarms off` stops @x sending the user alarms;
+`--phone on` lets @x Voke the user's phone. If you `--to` (or `ring`) someone who
+hasn't allowed it, the call fails — report it, don't retry.
 
 ---
 
@@ -282,6 +295,12 @@ Content-Type: application/json
 { "token": "vk_…", "action": "favorite", "voice_id": "<uuid>", "favorite": true }
 { "token": "vk_…", "action": "rename",   "voice_id": "<uuid>", "title": "Fajr adhan" }
 { "token": "vk_…", "action": "save_voice", "voice_id": "<received uuid>" }   // save a friend's voice
+{ "token": "vk_…", "action": "delete_voice", "voice_id": "<uuid>" }
+{ "token": "vk_…", "action": "delete_alarm", "alarm_id": "<uuid>" }   // ids come from "list"
+{ "token": "vk_…", "action": "friends" }
+{ "token": "vk_…", "action": "add_friend",    "username": "sara" }   // or accept_friend / remove_friend
+{ "token": "vk_…", "action": "set_consent",   "username": "sara", "can_send_alarms": true, "can_voke_phone": false }
+{ "token": "vk_…", "action": "voke_phone",    "username": "sara" }
 { "token": "vk_…", "action": "alarm",
   "title": "Interview",
   "at": "2026-06-13T07:30:00Z",      // OR "in_seconds": 1500  OR "right_now": true
@@ -342,6 +361,7 @@ use the `find_user_by_email` RPC for that).
 | `--say needs ELEVENLABS_API_KEY` | Export the key, or use `--voice file.mp3`, or omit voice. |
 | `that friend hasn't allowed you to send them alarms` | Recipient must accept the user as a friend and keep "Can send me alarms" on. Don't retry. |
 | `no Voke user @name found` | Wrong handle. Confirm with the user; usernames are case-insensitive, no `@` stored. |
-| Need to add a friend but only have a `vk_` token | Agent tokens can't manage friends. Ask the user to add them in the app, or to `voke login`. |
+| Friend/`ring` call returns **403** | The token lacks the friends scope. Ask the user to re-link the agent with "can send to friends" enabled (Voke → Settings → AI Agents). |
+| Asked to delete the user's account | Not possible via a token by design. Tell the user to do it in Voke → Settings → Delete Account. |
 | Alarm in `voke list` but it didn't ring | Phone hadn't synced before the fire time (app closed + short lead). Use longer lead times or ask the user to open Voke. |
 | `alarm failed (401)` in login mode | Session expired and refresh failed → `voke login` again. |
