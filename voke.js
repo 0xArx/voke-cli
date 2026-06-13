@@ -509,6 +509,32 @@ async function cmdList() {
   }
 }
 
+// ------------------------------------------------------------------- skill
+
+// The agent skill ships alongside the CLI in this repo.
+const SKILL_FILE = path.join(__dirname, "skill", "voke-skill.md");
+
+/**
+ * `voke skill`          → print the skill markdown (pipe it anywhere).
+ * `voke skill install`  → drop it into the agent's skills dir so it loads it.
+ *                          Defaults to Claude Code (~/.claude/skills); override
+ *                          the destination with --dir <path>.
+ */
+function cmdSkill(flags) {
+  let md;
+  try { md = fs.readFileSync(SKILL_FILE, "utf8"); }
+  catch { die(`skill file not found next to the CLI (${SKILL_FILE}). Reinstall from https://github.com/0xArx/voke-cli`); }
+
+  if (flags._[0] !== "install") { process.stdout.write(md); return; }
+
+  const dir = flags.dir || path.join(os.homedir(), ".claude", "skills", "voke-alarms");
+  const dest = path.join(dir, "SKILL.md");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(dest, md);
+  console.log(`Installed the Voke skill → ${dest}`);
+  console.log("Your AI agent can now set alarms. Pair it first with: voke link");
+}
+
 // -------------------------------------------------------------------- main
 
 function parseFlags(argv) {
@@ -542,8 +568,10 @@ const HELP = `voke — send real voice alarms to your iPhone (and let your AI do
       --to @username          send to a friend (they must allow it)
       --daily                 repeat daily
   voke list                   recent alarms
+  voke skill                  print the AI-agent skill (this CLI ships with it)
+  voke skill install          install it into your agent (~/.claude/skills)
 
-Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke`;
+Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke-cli`;
 
 (async () => {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -560,6 +588,7 @@ Voices are capped at 30 seconds. Docs: https://github.com/0xArx/voke`;
       case "friends": return await cmdFriends();
       case "alarm": return await cmdAlarm(flags);
       case "list": return await cmdList();
+      case "skill": return cmdSkill(flags);
       default: console.log(HELP);
     }
   } catch (e) {

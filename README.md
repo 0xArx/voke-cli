@@ -61,12 +61,19 @@ voice for the default alarm tone.
 
 ## For AI agents
 
-Drop [`skill/voke-skill.md`](skill/voke-skill.md) into your agent's skills (for
-Claude Code: `~/.claude/skills/voke-alarms/SKILL.md`). It documents every
-command plus the REST API, so the agent can set alarms on the user's behalf.
+The agent **skill ships with this CLI** — one command installs it into your
+agent so it knows how to set alarms:
 
-Agents can also skip the CLI entirely and call the REST API directly — see the
-skill file for the `POST /functions/v1/agent-api` endpoint.
+```bash
+voke skill install     # → ~/.claude/skills/voke-alarms/SKILL.md (Claude Code)
+                       #   or: voke skill install --dir <your agent's skills dir>
+voke skill             # or just print it to pipe anywhere
+```
+
+The skill ([`skill/voke-skill.md`](skill/voke-skill.md)) documents every command
+plus the REST API, so the agent can set alarms on the user's behalf. Agents can
+also skip the CLI entirely and call `POST /functions/v1/agent-api` directly —
+see the skill file.
 
 ## Delivery semantics
 

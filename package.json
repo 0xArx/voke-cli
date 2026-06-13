@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Send real voice alarms to your iPhone from the terminal — or let your AI agent do it (with TTS).",
   "bin": { "voke": "./voke.js" },
+  "files": ["voke.js", "skill/"],
   "engines": { "node": ">=18" },
   "license": "MIT",
   "homepage": "https://github.com/0xArx/voke-cli",
